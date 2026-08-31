@@ -1,0 +1,14 @@
+name: spark-connect-lab
+
+include:
+  - path: spark/docker-compose.yaml
+  - path: source-postgres/compose.yaml
+
+networks:
+  platform:
+    name: common-network
+    driver: bridge
+
+volumes:
+  source-postgres-data:
+    name: spark-connect-lab_source-postgres-data

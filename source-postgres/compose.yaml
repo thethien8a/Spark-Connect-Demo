@@ -1,0 +1,53 @@
+services:
+  source-postgres:
+    image: postgres:17.6-bookworm
+    hostname: source-postgres
+    container_name: source-postgres
+
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_wal_senders=10
+      - -c
+      - max_replication_slots=10
+      - -c
+      - timezone=UTC
+
+    environment:
+      POSTGRES_DB: ${SOURCE_POSTGRES_DB:?SOURCE_POSTGRES_DB is required}
+      POSTGRES_USER: ${SOURCE_POSTGRES_USER:?SOURCE_POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${SOURCE_POSTGRES_PASSWORD:?SOURCE_POSTGRES_PASSWORD is required}
+      SOURCE_APP_USER: ${SOURCE_APP_USER:?SOURCE_APP_USER is required}
+      SOURCE_APP_PASSWORD: ${SOURCE_APP_PASSWORD:?SOURCE_APP_PASSWORD is required}
+      DEBEZIUM_USER: ${DEBEZIUM_USER:?DEBEZIUM_USER is required}
+      DEBEZIUM_PASSWORD: ${DEBEZIUM_PASSWORD:?DEBEZIUM_PASSWORD is required}
+      TZ: UTC
+
+    ports:
+      - "${SOURCE_POSTGRES_PORT:-5432}:5432"
+
+    volumes:
+      - source-postgres-data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+    networks:
+      - platform
+
+networks:
+  platform:
+    name: common-network
+    driver: bridge
+
+volumes:
+  source-postgres-data:
+    name: spark-connect-lab_source-postgres-data
