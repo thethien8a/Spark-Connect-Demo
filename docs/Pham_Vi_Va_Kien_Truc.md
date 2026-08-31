@@ -23,7 +23,7 @@ Nguồn dữ liệu là PostgreSQL local do project quản lý. Dùng Python/Fak
 ## Mô hình nguồn tối thiểu
 
 ```text
-customers(customer_id, name, city, created_at)
+customers(customer_id, name, city, created_at, updated_at)
 products(product_id, name, category, price, stock_quantity, created_at, updated_at)
 orders(order_id, customer_id, status, total_amount, created_at, updated_at)
 order_items(order_id, product_id, quantity, unit_price)

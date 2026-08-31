@@ -6,19 +6,19 @@
 
 | Mục | Giá trị |
 | --- | --- |
-| Trạng thái tổng thể | Đang chuẩn bị triển khai |
-| Mốc hiện tại | M0 — chốt phạm vi và compatibility |
-| Đã hoàn thành | Kế hoạch kiến trúc và thứ tự triển khai |
-| Đang làm | Chưa bắt đầu code runtime |
-| Bước tiếp theo | Chốt version, tạo PostgreSQL nguồn và generator |
-| Cập nhật cuối | 2026-08-29 |
+| Trạng thái tổng thể | M1 hoàn thành, sẵn sàng triển khai M2 |
+| Mốc hiện tại | M2 — Kafka và Debezium |
+| Đã hoàn thành | M0 compatibility và M1 PostgreSQL nguồn/generator |
+| Đang làm | Chuẩn bị Kafka và Debezium |
+| Bước tiếp theo | Dựng Kafka Connect/Debezium và đăng ký PostgreSQL connector |
+| Cập nhật cuối | 2026-08-30 |
 
 ## Tiến độ theo mốc
 
 | Mốc | Nội dung | Trạng thái | Ghi chú |
 | --- | --- | --- | --- |
-| M0 | Phạm vi và compatibility matrix | `IN_PROGRESS` | Use case đã chọn; chưa kiểm chứng version |
-| M1 | PostgreSQL nguồn và generator | `TODO` | Chưa có schema/generator |
+| M0 | Phạm vi và compatibility matrix | `DONE` | Được chốt theo quyết định triển khai; sẽ xác nhận lại smoke tích hợp khi dựng M2/M3 |
+| M1 | PostgreSQL nguồn và generator | `DONE` | PostgreSQL 17.6, logical replication, schema, seed và generator đã kiểm thử |
 | M2 | Kafka và Debezium | `TODO` | Chưa dựng |
 | M3 | MinIO, Catalog, Spark Connect | `TODO` | Chưa dựng |
 | M4 | Bronze streaming | `TODO` | Chưa viết job |
@@ -40,7 +40,7 @@
 
 ## Checklist hoàn thành project
 
-- [ ] PostgreSQL phát sinh INSERT/UPDATE/DELETE hợp lệ.
+- [x] PostgreSQL phát sinh INSERT/UPDATE/DELETE hợp lệ.
 - [ ] Debezium phát event đúng và Kafka replay được.
 - [ ] Bronze lưu được payload gốc và metadata.
 - [ ] Silver phản ánh đúng current state.
@@ -57,6 +57,8 @@
 | Ngày | Thay đổi | Mốc |
 | --- | --- | --- |
 | 2026-08-29 | Hoàn thiện kế hoạch, chia thành tài liệu con và tạo tracking | M0 |
+| 2026-08-30 | Thêm source-postgres, schema CDC, seed và generator; smoke test đạt | M1 |
+| 2026-08-30 | Tách hạ tầng độc lập theo folder, giữ Spark trong một module và dùng shared network | M1 |
 
 ## Quy ước trạng thái
 

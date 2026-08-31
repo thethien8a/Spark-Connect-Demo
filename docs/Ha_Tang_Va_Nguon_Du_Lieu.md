@@ -26,6 +26,21 @@ Việc cần làm:
 
 **Đạt khi:** PostgreSQL có dữ liệu thay đổi liên tục, generator chạy lại được và có thể dừng mà không làm hỏng dữ liệu.
 
+### Chạy M1 local
+
+Từ thư mục gốc project, dùng các biến trong `.env.example` cho môi trường demo:
+
+```powershell
+docker compose --env-file .env.example -f compose.yaml up -d source-postgres
+venv\Scripts\python.exe source-postgres\generator.py --dsn "postgresql://source_app:dev-source-app-password@localhost:5432/ecommerce" seed
+venv\Scripts\python.exe source-postgres\generator.py --dsn "postgresql://source_app:dev-source-app-password@localhost:5432/ecommerce" smoke
+venv\Scripts\python.exe source-postgres\generator.py --dsn "postgresql://source_app:dev-source-app-password@localhost:5432/ecommerce" run
+```
+
+`smoke` kiểm tra INSERT, toàn bộ transition hợp lệ, transition sai bị từ chối và DELETE cascade. `run` phát sinh thay đổi liên tục; dừng bằng `Ctrl+C`, transaction đang dở sẽ được rollback khi kết nối đóng.
+
+Các script trong `source-postgres/init` chỉ chạy khi volume PostgreSQL được khởi tạo lần đầu. Khi thay đổi schema hoặc role, cần chủ động tạo lại volume development trước khi kiểm thử lại.
+
 ## Mốc M2 — Kafka và Debezium
 
 1. Dựng Kafka và Kafka Connect/Debezium.
@@ -69,6 +84,34 @@ Nguyên tắc:
 - Checkpoint tách khỏi warehouse.
 - Health check phản ánh khả năng sẵn sàng thật.
 - Spark được nạp đúng Iceberg, Kafka và JDBC JAR.
+
+### Tách service và kết nối mạng
+
+Compose root `compose.yaml` chỉ làm nhiệm vụ ghép các service. Định nghĩa từng service nằm trong folder tương ứng:
+
+```text
+source-postgres/compose.yaml
+spark/docker-compose.yaml
+```
+
+`spark/docker-compose.yaml` là một module duy nhất chứa toàn bộ Spark cluster: master, hai worker và Spark Connect. Các hạ tầng độc lập như PostgreSQL, Kafka, MinIO và Airflow sẽ có Compose file riêng ở folder của chúng.
+
+Root và các module dùng network `spark-connect-network`. Docker DNS cho phép gọi nhau bằng service name, ví dụ `spark-master:7077` hoặc `source-postgres:5432`; không dùng IP container cố định.
+
+Khởi động toàn bộ stack:
+
+```powershell
+docker compose --env-file .env.example -f compose.yaml up -d
+```
+
+Có thể khởi động riêng nhóm Spark hoặc PostgreSQL khi cần; cả hai vẫn dùng cùng network cố định:
+
+```powershell
+docker compose --env-file .env.example -f source-postgres\compose.yaml up -d
+docker compose -f spark\docker-compose.yaml up -d
+```
+
+Trong cách chạy riêng, khởi động PostgreSQL và Spark từ hai lệnh trên cùng project directory; khi chạy toàn bộ nên dùng root để Compose quản lý một lifecycle thống nhất.
 
 Smoke test Spark Connect:
 
