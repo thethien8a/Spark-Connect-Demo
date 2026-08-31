@@ -16,6 +16,8 @@ from faker import Faker
 from psycopg import Connection
 from psycopg.errors import CheckViolation, OperationalError
 
+from config import ConfigError, PostgresConfig, load_source_app_config
+
 
 VALID_TRANSITIONS = {
     "pending": ("paid",),
@@ -70,11 +72,6 @@ def probability(value: str) -> float:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--dsn",
-        default=os.getenv("SOURCE_DATABASE_URL"),
-        help="PostgreSQL DSN; defaults to SOURCE_DATABASE_URL",
-    )
     commands = parser.add_subparsers(dest="command", required=True)
 
     seed = commands.add_parser("seed", help="insert deterministic customers and products")
@@ -101,11 +98,22 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def connect_with_retry(dsn: str, attempts: int = 15, delay_seconds: float = 2.0) -> Connection:
+def connect_with_retry(
+    config: PostgresConfig,
+    attempts: int = 15,
+    delay_seconds: float = 2.0,
+) -> Connection:
     last_error: OperationalError | None = None
     for attempt in range(1, attempts + 1):
         try:
-            return psycopg.connect(dsn, autocommit=True)
+            return psycopg.connect(
+                host=config.host,
+                port=config.port,
+                dbname=config.database,
+                user=config.user,
+                password=config.password,
+                autocommit=True,
+            )
         except OperationalError as error:
             last_error = error
             if attempt == attempts:
@@ -497,12 +505,15 @@ def install_signal_handlers() -> None:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    if not args.dsn:
-        parser.error("provide --dsn or set SOURCE_DATABASE_URL")
+
+    try:
+        config = load_source_app_config()
+    except ConfigError as error:
+        parser.error(str(error))
 
     try:
         install_signal_handlers()
-        with connect_with_retry(args.dsn) as conn:
+        with connect_with_retry(config) as conn:
             if args.command == "seed":
                 seed_database(conn, args.customers, args.products, args.seed)
             elif args.command == "smoke":

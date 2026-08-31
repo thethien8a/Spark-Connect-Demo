@@ -28,14 +28,17 @@ Việc cần làm:
 
 ### Chạy M1 local
 
-Từ thư mục gốc project, dùng các biến trong `.env.example` cho môi trường demo:
+Từ thư mục gốc project, tạo `.env` từ cấu hình mẫu rồi chạy M1:
 
 ```powershell
-docker compose --env-file .env.example -f compose.yaml up -d source-postgres
-venv\Scripts\python.exe source-postgres\generator.py --dsn "postgresql://source_app:dev-source-app-password@localhost:5432/ecommerce" seed
-venv\Scripts\python.exe source-postgres\generator.py --dsn "postgresql://source_app:dev-source-app-password@localhost:5432/ecommerce" smoke
-venv\Scripts\python.exe source-postgres\generator.py --dsn "postgresql://source_app:dev-source-app-password@localhost:5432/ecommerce" run
+Copy-Item .env.example .env
+docker compose --env-file .env -f compose.yaml up -d source-postgres
+venv\Scripts\python.exe source-postgres\generator.py seed
+venv\Scripts\python.exe source-postgres\generator.py smoke
+venv\Scripts\python.exe source-postgres\generator.py run
 ```
+
+`source-postgres/config.py` nạp `.env` và dựng cấu hình kết nối `source_app` từ các biến riêng, không lưu DSN có password. Cấu hình Debezium dùng hostname nội bộ `SOURCE_POSTGRES_INTERNAL_HOST`; connector M2 sẽ lấy cùng nhóm biến `DEBEZIUM_*`.
 
 `smoke` kiểm tra INSERT, toàn bộ transition hợp lệ, transition sai bị từ chối và DELETE cascade. `run` phát sinh thay đổi liên tục; dừng bằng `Ctrl+C`, transaction đang dở sẽ được rollback khi kết nối đóng.
 
@@ -101,13 +104,13 @@ Root và các module dùng network `spark-connect-network`. Docker DNS cho phép
 Khởi động toàn bộ stack:
 
 ```powershell
-docker compose --env-file .env.example -f compose.yaml up -d
+docker compose --env-file .env -f compose.yaml up -d
 ```
 
 Có thể khởi động riêng nhóm Spark hoặc PostgreSQL khi cần; cả hai vẫn dùng cùng network cố định:
 
 ```powershell
-docker compose --env-file .env.example -f source-postgres\compose.yaml up -d
+docker compose --env-file .env -f source-postgres\compose.yaml up -d
 docker compose -f spark\docker-compose.yaml up -d
 ```
 
