@@ -3,6 +3,7 @@ name: spark-connect-lab
 include:
   - path: spark/docker-compose.yaml
   - path: source-postgres/compose.yaml
+  - path: kafka/compose.yaml
 
 networks:
   platform:
@@ -12,3 +13,12 @@ networks:
 volumes:
   source-postgres-data:
     name: spark-connect-lab_source-postgres-data
+  kafka-1-data:
+    name: spark-connect-lab_kafka-1-data
+    external: true
+  kafka-2-data:
+    name: spark-connect-lab_kafka-2-data
+    external: true
+  kafka-3-data:
+    name: spark-connect-lab_kafka-3-data
+    external: true

@@ -1,6 +1,6 @@
 # Phạm Vi Và Kiến Trúc
 
-## Use case MVP
+## Use case
 
 Đồng bộ trạng thái đơn hàng từ database giao dịch sang Lakehouse gần thời gian thực và tính doanh thu theo ngày.
 
@@ -13,6 +13,7 @@ Nguồn dữ liệu là PostgreSQL local do project quản lý. Dùng Python/Fak
 | PostgreSQL nguồn | `customers`, `products`, `orders`, `order_items` |
 | Debezium | Đọc WAL/logical replication và tạo CDC event |
 | Kafka | Buffer, retention và replay event |
+| Kafka Connect + HAProxy | Chạy connector distributed và cung cấp endpoint REST ổn định |
 | Spark Structured Streaming | Parse, validate, deduplicate và ghi Iceberg |
 | Spark Connect | Client cho notebook, smoke test và truy vấn tương tác |
 | Iceberg | Table format, ACID commit, snapshot và schema evolution |

@@ -7,7 +7,7 @@ Phân biệt:
 - **Catalog commit conflict:** có thể retry có giới hạn.
 - **Data conflict:** hai writer chạm dữ liệu chồng lấn; không retry mù quáng.
 
-Nguyên tắc MVP:
+Nguyên tắc vận hành:
 
 1. Mỗi bảng Silver chỉ có một streaming writer.
 2. Pipeline khác chỉ đọc hoặc ghi bảng riêng.
@@ -60,13 +60,14 @@ Bắt đầu partition theo ngày tạo đơn. Chỉ đổi partition khi worklo
 
 Dùng snapshot để điều tra lỗi, so sánh trước/sau commit và recovery trong retention window.
 
-Multi-engine query bằng Trino, PyArrow hoặc PyIceberg là phần mở rộng sau MVP.
+Multi-engine query bằng Trino, PyArrow hoặc PyIceberg không thuộc phạm vi roadmap M0-M9 hiện tại.
 
 ## Observability và failure drill
 
 Theo dõi:
 
 - Kafka consumer lag.
+- HAProxy backend health, request errors và connection count của Kafka Connect.
 - Input và rejected rows.
 - Insert/update/delete count.
 - Batch duration và commit time.

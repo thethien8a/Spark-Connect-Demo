@@ -19,7 +19,7 @@ Việc cần làm:
 
 1. Tạo service `source-postgres`.
 2. Bật WAL/logical replication cho Debezium.
-3. Tạo bốn bảng MVP và primary key.
+3. Tạo bốn bảng nguồn và primary key.
 4. Viết seed script.
 5. Viết generator tạo order và cập nhật trạng thái theo transition hợp lệ.
 6. Tạo các tình huống INSERT, UPDATE, DELETE và dữ liệu lỗi có kiểm soát.
@@ -46,14 +46,73 @@ Các script trong `source-postgres/init` chỉ chạy khi volume PostgreSQL đư
 
 ## Mốc M2 — Kafka và Debezium
 
-1. Dựng Kafka và Kafka Connect/Debezium.
-2. Đăng ký PostgreSQL connector bằng cấu hình ngoài source code.
-3. Tạo topic CDC và DLQ.
-4. Dùng primary key làm Kafka key.
-5. Cấu hình retention đủ cho replay.
-6. Kiểm tra `before`, `after`, `op`, source metadata và offset.
+### Quyết định triển khai M2
 
-**Đạt khi:** một thao tác insert/update/delete trong PostgreSQL xuất hiện đúng ở topic tương ứng và có thể đọc lại.
+M2 dùng ba Kafka node chạy KRaft ở combined broker/controller mode, hai Kafka Connect worker chạy distributed mode và một HAProxy làm endpoint chung cho Connect REST API. Đây là topology production-like cơ bản: có quorum, replication, persistent state, worker failover và health-aware routing, nhưng vẫn đủ gọn để quan sát từng thành phần trên một máy học tập.
+
+| Thành phần | Phiên bản/image đã pin | Ghi chú |
+| --- | --- | --- |
+| Kafka | `apache/kafka:4.3.0` | Image JVM chính thức, ba broker/controller KRaft |
+| Kafka Connect | Custom image dựa trên `apache/kafka:4.3.0` | Hai worker dùng chung group và internal topics |
+| Debezium PostgreSQL connector | `3.6.1.Final` | Plugin archive được pin version và kiểm tra SHA-512 khi build |
+| Kafka Connect load balancer | `haproxy:3.4.4-alpine3.24` | Một endpoint REST, HTTP health check cho hai worker |
+| PostgreSQL nguồn | `postgres:17.6-bookworm` | Đã bật logical replication ở M1 |
+
+Không dùng image `quay.io/debezium/kafka` hoặc `quay.io/debezium/connect` vì Debezium xác định chúng dành cho test/evaluation. Connect image được build rõ ràng từ Kafka chính thức và chỉ cài PostgreSQL connector lấy từ Maven Central. Cách này gần quy trình production hơn: artifact có version, checksum và image có thể tái tạo.
+
+Topology và kết nối dự kiến:
+
+- `kafka-1`, `kafka-2`, `kafka-3` đều giữ broker và controller role; metadata quorum chịu được một node lỗi.
+- Mỗi broker có persistent volume riêng, replication factor mặc định `3` và `min.insync.replicas=2`.
+- Container bootstrap qua `kafka-1:9092,kafka-2:9092,kafka-3:9092`.
+- Client trên host dùng ba listener tại `localhost:29092`, `localhost:39092`, `localhost:49092`.
+- `connect-1` và `connect-2` dùng chung Connect group; config, offset và status topics có replication factor `3`.
+- Mỗi Connect worker advertise hostname nội bộ riêng để request có thể được forward đúng giữa các worker.
+- HAProxy kiểm tra `GET /` trên `connect-1:8083` và `connect-2:8083`, chỉ route tới worker trả HTTP `200`.
+- Client quản trị Connect dùng endpoint duy nhất `http://localhost:8083`; REST port của từng worker không publish trực tiếp ra host.
+- Kafka, Kafka Connect và `source-postgres` cùng dùng network `common-network`.
+
+Combined mode giúp học quorum và broker replication mà không phải vận hành sáu Kafka process. Production quan trọng nên tách tối thiểu ba controller khỏi các broker để có thể scale và rolling update độc lập. M2 dùng listener tách riêng cho broker, controller và host client nhưng giữ giao thức `PLAINTEXT` trong local lab; TLS, SASL và ACL là bước hardening bắt buộc trước khi triển khai trên hạ tầng thật.
+
+HAProxy chỉ cân bằng Kafka Connect REST API dùng để đăng ký, cập nhật và quan sát connector. Kafka producer/consumer không đi qua HAProxy vì sau bước bootstrap chúng tự khám phá broker và kết nối trực tiếp tới partition leader. Một HAProxy đủ để học routing và worker failover nhưng bản thân nó vẫn là single point of failure; production thật cần nhiều load balancer instance hoặc endpoint HA do Kubernetes/cloud cung cấp.
+
+Nguồn tham chiếu:
+
+- [Apache Kafka Docker image](https://kafka.apache.org/43/getting-started/docker/)
+- [Apache Kafka KRaft](https://kafka.apache.org/43/operations/kraft/)
+- [Kafka Connect REST API](https://github.com/apache/kafka/blob/trunk/docs/kafka-connect/user-guide.md)
+- [Cài Debezium connector plugin](https://debezium.io/documentation/reference/3.6/install.html)
+- [Debezium PostgreSQL connector](https://debezium.io/documentation/reference/3.6/connectors/postgresql.html)
+- [HAProxy configuration](https://github.com/haproxy/docs/blob/master/_autodocs/01-configuration.md)
+- [HAProxy official image](https://hub.docker.com/_/haproxy)
+
+1. Dựng ba Kafka node KRaft và persistent volume riêng.
+2. Build custom image rồi dựng hai Kafka Connect worker có Debezium PostgreSQL connector.
+3. Dựng HAProxy với round-robin routing và HTTP health check cho Connect REST API.
+4. Đăng ký PostgreSQL connector qua endpoint HAProxy bằng cấu hình ngoài source code.
+5. Tạo topic CDC và DLQ với replication factor `3`.
+6. Dùng primary key làm Kafka key và cấu hình retention đủ cho replay.
+7. Kiểm tra `before`, `after`, `op`, source metadata, offset và Connect worker failover.
+
+**Đạt khi:** một thao tác insert/update/delete trong PostgreSQL xuất hiện đúng ở topic tương ứng, có thể đọc lại và Connect REST API vẫn dùng được qua HAProxy khi dừng một worker.
+
+### Vận hành Kafka KRaft cluster
+
+Khởi động riêng ba Kafka node từ thư mục gốc project:
+
+```powershell
+docker compose --env-file .env -f kafka\compose.yaml up -d
+docker compose --env-file .env -f kafka\compose.yaml ps
+```
+
+Ba node dùng chung `KAFKA_CLUSTER_ID` nhưng có `KAFKA_NODE_ID`, advertised listener và persistent volume riêng. Listener nội bộ `9092` dành cho broker/client trong Docker, listener `9093` dành cho controller quorum và listener `9094` được map ra ba host port khác nhau. Broker không tự tạo topic; topic nghiệp vụ sẽ được khai báo chủ động với replication factor `3` ở bước cấu hình CDC.
+
+Kiểm tra trạng thái metadata quorum khi cần:
+
+```powershell
+docker exec kafka-1 /opt/kafka/bin/kafka-metadata-quorum.sh `
+  --bootstrap-server localhost:9092 describe --status
+```
 
 ## Mốc M3 — MinIO và Iceberg Catalog
 
@@ -73,6 +132,7 @@ Stack development mục tiêu:
 ```text
 source-postgres
 kafka + kafka-connect/debezium
+haproxy cho kafka-connect REST API
 catalog-postgres
 minio
 spark-master + spark-worker
@@ -94,12 +154,13 @@ Compose root `compose.yaml` chỉ làm nhiệm vụ ghép các service. Định 
 
 ```text
 source-postgres/compose.yaml
+kafka/compose.yaml
 spark/docker-compose.yaml
 ```
 
 `spark/docker-compose.yaml` là một module duy nhất chứa toàn bộ Spark cluster: master, hai worker và Spark Connect. Các hạ tầng độc lập như PostgreSQL, Kafka, MinIO và Airflow sẽ có Compose file riêng ở folder của chúng.
 
-Root và các module dùng network `spark-connect-network`. Docker DNS cho phép gọi nhau bằng service name, ví dụ `spark-master:7077` hoặc `source-postgres:5432`; không dùng IP container cố định.
+Root và các module dùng network `common-network`. Docker DNS cho phép gọi nhau bằng service name, ví dụ `spark-master:7077`, `source-postgres:5432` hoặc `kafka:9092`; không dùng IP container cố định.
 
 Khởi động toàn bộ stack:
 
