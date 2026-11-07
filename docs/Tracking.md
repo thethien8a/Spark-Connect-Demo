@@ -9,9 +9,9 @@
 | Trạng thái tổng thể | M1 hoàn thành, M2 đang triển khai theo từng bước |
 | Mốc hiện tại | M2 — Kafka và Debezium |
 | Đã hoàn thành | M0 compatibility và M1 PostgreSQL nguồn/generator |
-| Đang làm | Ba Kafka broker/controller KRaft đã chạy healthy với persistent volume riêng |
-| Bước tiếp theo | Build custom Kafka Connect image chứa Debezium PostgreSQL connector |
-| Cập nhật cuối | 2026-09-02 |
+| Đang làm | Hai Kafka Connect worker distributed đã chạy healthy và nhận diện Debezium PostgreSQL `3.6.1.Final` trên cả hai |
+| Bước tiếp theo | Dựng HAProxy làm endpoint REST chung cho hai Kafka Connect worker |
+| Cập nhật cuối | 2026-11-06 |
 
 ## Tiến độ theo mốc
 
@@ -19,7 +19,7 @@
 | --- | --- | --- | --- |
 | M0 | Phạm vi và compatibility matrix | `DONE` | Được chốt theo quyết định triển khai; sẽ xác nhận lại smoke tích hợp khi dựng M2/M3 |
 | M1 | PostgreSQL nguồn và generator | `DONE` | PostgreSQL 17.6, logical replication, schema, seed và generator đã kiểm thử |
-| M2 | Kafka và Debezium | `IN_PROGRESS` | Cụm 3 Kafka KRaft đã healthy; chưa dựng 2 Connect worker và HAProxy |
+| M2 | Kafka và Debezium | `IN_PROGRESS` | 3 Kafka + 2 Connect đã healthy; REST, plugin, shared group và internal topics đã kiểm thử; chưa dựng HAProxy/đăng ký CDC connector |
 | M3 | MinIO, Catalog, Spark Connect | `TODO` | Chưa dựng |
 | M4 | Bronze streaming | `TODO` | Chưa viết job |
 | M5 | Silver `orders_current` | `TODO` | Chưa viết `foreachBatch/MERGE` |
@@ -63,6 +63,8 @@
 | 2026-09-01 | Thêm HAProxy làm endpoint health-aware cho hai Kafka Connect REST API | M2 |
 | 2026-09-02 | Chốt toàn bộ roadmap M0-M9 là phạm vi project; loại clickstream, dashboard và cách triển khai rút gọn | M0-M9 |
 | 2026-09-02 | Dựng cụm ba Kafka 4.3.0 KRaft node với quorum, health check và volume độc lập | M2 |
+| 2026-09-12 | Build custom Kafka Connect image, xác minh SHA-512 và nhận diện Debezium PostgreSQL `3.6.1.Final` qua REST API | M2 |
+| 2026-11-06 | Thêm `connect-1`/`connect-2` vào Compose; smoke test đạt REST/plugin, cùng Connect group, REST giữa worker và internal topics RF=3/compaction; chưa đăng ký CDC connector | M2 |
 
 ## Quy ước trạng thái
 

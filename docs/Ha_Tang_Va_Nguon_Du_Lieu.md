@@ -85,6 +85,8 @@ Nguồn tham chiếu:
 - [Debezium PostgreSQL connector](https://debezium.io/documentation/reference/3.6/connectors/postgresql.html)
 - [HAProxy configuration](https://github.com/haproxy/docs/blob/master/_autodocs/01-configuration.md)
 - [HAProxy official image](https://hub.docker.com/_/haproxy)
+- [Docker Compose startup order và service health](https://docs.docker.com/compose/how-tos/startup-order)
+- [Docker Compose image pull policy](https://github.com/docker/docs/blob/main/content/reference/compose-file/services.md#pull_policy)
 
 1. Dựng ba Kafka node KRaft và persistent volume riêng.
 2. Build custom image rồi dựng hai Kafka Connect worker có Debezium PostgreSQL connector.
@@ -98,10 +100,20 @@ Nguồn tham chiếu:
 
 ### Vận hành Kafka KRaft cluster
 
+Ba Kafka volume được khai báo `external` để Compose không quản lý việc tạo/xóa dữ liệu. Nếu dùng Docker Engine mới chưa có các volume này, tạo một lần trước khi khởi động:
+
+```powershell
+docker volume create spark-connect-lab_kafka-1-data
+docker volume create spark-connect-lab_kafka-2-data
+docker volume create spark-connect-lab_kafka-3-data
+```
+
+Không xóa volume để chạy lại worker; trạng thái Connect được lưu trong Kafka internal topics.
+
 Khởi động riêng ba Kafka node từ thư mục gốc project:
 
 ```powershell
-docker compose --env-file .env -f kafka\compose.yaml up -d
+docker compose --env-file .env -f kafka\compose.yaml up -d kafka-1 kafka-2 kafka-3
 docker compose --env-file .env -f kafka\compose.yaml ps
 ```
 
@@ -113,6 +125,87 @@ Kiểm tra trạng thái metadata quorum khi cần:
 docker exec kafka-1 /opt/kafka/bin/kafka-metadata-quorum.sh `
   --bootstrap-server localhost:9092 describe --status
 ```
+
+### Build và kiểm tra Kafka Connect image
+
+Custom image trong `kafka/connect` dùng `apache/kafka:4.3.0`, tải đúng Debezium PostgreSQL connector `3.6.1.Final` từ Maven Central và kiểm tra SHA-512 trước khi giải nén. Build sẽ dừng ngay nếu artifact không khớp checksum đã pin.
+
+Build image từ thư mục gốc project:
+
+```powershell
+docker build `
+  --tag spark-connect-lab/kafka-connect:4.3.0-debezium-3.6.1 `
+  kafka\connect
+```
+
+Khi cần smoke test độc lập trước khi thêm worker vào Compose, chạy một worker tạm trên shared network:
+
+```powershell
+docker run --rm --name connect-plugin-smoke `
+  --hostname connect-plugin-smoke `
+  --network common-network `
+  -p 18083:8083 `
+  spark-connect-lab/kafka-connect:4.3.0-debezium-3.6.1
+```
+
+Từ terminal khác, kiểm tra plugin:
+
+```powershell
+Invoke-RestMethod http://localhost:18083/connector-plugins
+```
+
+Kết quả phải chứa class `io.debezium.connector.postgresql.PostgresConnector` với version `3.6.1.Final`. Worker dùng `plugin.path=/opt/kafka/plugins`, tự advertise Docker hostname nếu `CONNECT_REST_ADVERTISED_HOST_NAME` không được cung cấp và tạo ba internal topic compacted với replication factor `3`.
+
+### Chạy hai Kafka Connect worker distributed
+
+`kafka/compose.yaml` định nghĩa `connect-1` và `connect-2`, dùng chung custom image đã build ở bước trên. `pull_policy: never` yêu cầu image có sẵn trên Docker Engine, không thử tải custom image từ registry. Sau khi thay đổi Dockerfile, plugin hoặc cấu hình đóng gói trong image, build lại image trước khi chạy Compose.
+
+Hai worker dùng chung `group.id=spark-connect-lab-connect` và ba internal topic, nhưng advertise hostname riêng qua `CONNECT_REST_ADVERTISED_HOST_NAME`. Mỗi JVM có heap tối đa `512 MB`. Worker chỉ khởi động sau khi cả ba broker healthy; health check của worker gọi `GET /` tại `localhost:8083` bằng `wget` có sẵn trong image.
+
+Khởi động từ thư mục gốc project sau khi tạo các Kafka volume và build image:
+
+```powershell
+docker compose --env-file .env -f compose.yaml config --quiet
+docker compose --env-file .env -f compose.yaml up -d --wait --wait-timeout 240 connect-1 connect-2
+docker compose --env-file .env -f compose.yaml ps
+```
+
+Lệnh `up` chỉ khởi động hai worker cùng ba Kafka dependency, không khởi động Spark hoặc PostgreSQL. Có thể dùng `-f kafka\compose.yaml` khi chỉ vận hành module Kafka.
+
+REST port của worker không publish trực tiếp ra host. Kiểm tra API bên trong container:
+
+```powershell
+foreach ($worker in "connect-1", "connect-2") {
+  docker exec $worker wget -q -O - http://localhost:8083/
+  docker exec $worker wget -q -O - http://localhost:8083/connector-plugins
+  docker exec $worker wget -q -O - http://localhost:8083/connectors
+}
+```
+
+Kiểm tra hostname REST có thể được worker còn lại truy cập:
+
+```powershell
+docker exec connect-1 wget -q -O - http://connect-2:8083/
+docker exec connect-2 wget -q -O - http://connect-1:8083/
+docker compose --env-file .env -f compose.yaml logs --tail 100 connect-1 connect-2
+```
+
+Kiểm tra partition, replication factor và compaction của ba internal topic:
+
+```powershell
+docker exec kafka-1 /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic "spark-connect-lab-connect-(configs|offsets|status)"
+```
+
+**Smoke test đạt khi:**
+
+- Ba broker và hai worker đều healthy.
+- `GET /` trên hai worker trả cùng Kafka cluster ID và version Kafka `4.3.0`.
+- `GET /connector-plugins` trên từng worker đều có Debezium PostgreSQL `3.6.1.Final`.
+- Hai worker truy cập được REST API của nhau bằng hostname nội bộ.
+- Log xác nhận hai worker tham gia cùng Connect group, có assignment thành công và ổn định sau rebalance.
+- Ba internal topic `spark-connect-lab-connect-configs`, `spark-connect-lab-connect-offsets`, `spark-connect-lab-connect-status` có replication factor `3` và `cleanup.policy=compact`; số partition lần lượt là `1`, `25`, `5`.
+
+Nếu chưa đăng ký connector, `GET /connectors` trả `[]` là bình thường. Worker healthy và plugin được nhận diện chưa chứng minh CDC hoặc task failover; các kiểm thử đó thực hiện sau khi dựng HAProxy và đăng ký PostgreSQL connector.
 
 ## Mốc M3 — MinIO và Iceberg Catalog
 

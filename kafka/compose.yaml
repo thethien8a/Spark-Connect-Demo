@@ -35,6 +35,39 @@ x-kafka-environment: &kafka-environment
   KAFKA_HEAP_OPTS: -Xms512m -Xmx512m
   TZ: UTC
 
+x-connect-common: &connect-common
+  image: spark-connect-lab/kafka-connect:4.3.0-debezium-3.6.1
+  pull_policy: never
+  restart: unless-stopped
+  stop_grace_period: 30s
+  depends_on:
+    kafka-1:
+      condition: service_healthy
+    kafka-2:
+      condition: service_healthy
+    kafka-3:
+      condition: service_healthy
+  healthcheck:
+    test:
+      - CMD
+      - wget
+      - -q
+      - -O
+      - /dev/null
+      - -T
+      - "5"
+      - http://localhost:8083/
+    interval: 10s
+    timeout: 10s
+    retries: 12
+    start_period: 30s
+  networks:
+    - platform
+
+x-connect-environment: &connect-environment
+  KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+  TZ: UTC
+
 services:
   kafka-1:
     <<: *kafka-common
@@ -74,6 +107,22 @@ services:
       KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-3:9092,EXTERNAL://localhost:${KAFKA_3_HOST_PORT:-49092}
     volumes:
       - kafka-3-data:/var/lib/kafka/data
+
+  connect-1:
+    <<: *connect-common
+    hostname: connect-1
+    container_name: connect-1
+    environment:
+      <<: *connect-environment
+      CONNECT_REST_ADVERTISED_HOST_NAME: connect-1
+
+  connect-2:
+    <<: *connect-common
+    hostname: connect-2
+    container_name: connect-2
+    environment:
+      <<: *connect-environment
+      CONNECT_REST_ADVERTISED_HOST_NAME: connect-2
 
 networks:
   platform:
