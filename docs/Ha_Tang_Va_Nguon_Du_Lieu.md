@@ -263,7 +263,74 @@ docker compose --env-file .env -f compose.yaml logs --tail 50 connect-lb
 - Khi cả hai worker dừng và bị loại khỏi backend, endpoint trả HTTP `503`.
 - Sau khi khởi động lại, hai worker và HAProxy đều healthy, request lại được chia tới cả hai; port của worker không publish ra host.
 
-Các bài kiểm thử này dùng connector registry rỗng, không chứng minh CDC hoặc connector task failover. Bước tiếp theo là chuẩn bị topic CDC và đăng ký PostgreSQL connector cho bốn bảng; seed/generator vẫn là script riêng, không tự chạy trong Compose.
+Các bài kiểm thử này dùng connector registry rỗng, không chứng minh CDC hoặc connector task failover. Topic CDC được quản lý ở mục dưới; connector vẫn chưa đăng ký. Seed/generator vẫn là script riêng, không tự chạy trong Compose.
+
+### Quản lý topic CDC bằng manifest
+
+`kafka/topics.json` là cấu hình có version cho các topic nghiệp vụ. `kafka/setup_topics.py` đọc manifest và dùng Kafka CLI trong container để tạo topic còn thiếu hoặc kiểm tra topic đã có. Script chỉ dùng thư viện chuẩn Python, không thêm dependency và không tự chạy trong Compose.
+
+Quy ước tên topic cho connector PostgreSQL sắp triển khai là `topic.prefix=ecommerce`, schema `public`:
+
+| Topic | Vai trò |
+| --- | --- |
+| `ecommerce.public.customers` | CDC bảng `public.customers` |
+| `ecommerce.public.products` | CDC bảng `public.products` |
+| `ecommerce.public.orders` | CDC bảng `public.orders` |
+| `ecommerce.public.order_items` | CDC bảng `public.order_items` |
+| `ecommerce.dlq` | Chuẩn bị cho luồng xử lý lỗi; hiện chưa có thành phần ghi vào topic này |
+
+Mỗi topic khai báo rõ `partitions=3`, `replication_factor=3`, `min.insync.replicas=2`, `retention.ms=604800000` (bảy ngày) và `cleanup.policy=delete`. Đây là chính sách hiện tại của project, không phải bộ thông số áp dụng cho mọi workload production. `delete` giữ lịch sử trong khoảng retention thay vì chỉ giữ trạng thái cuối theo key bằng compaction.
+
+Điều kiện chạy: Docker CLI dùng được, broker đang chạy và có Python; có thể dùng Python trong `venv` hiện có. Từ thư mục gốc project, tạo topic còn thiếu và kiểm tra:
+
+```powershell
+.\venv\Scripts\python.exe -B .\kafka\setup_topics.py
+```
+
+Chế độ chỉ đọc, phù hợp cho kiểm tra trước/sau triển khai hoặc đưa vào CI:
+
+```powershell
+.\venv\Scripts\python.exe -B .\kafka\setup_topics.py --check
+```
+
+- Exit `0`: tất cả topic khai báo khớp manifest.
+- Exit `1`: thiếu topic ở chế độ `--check`, cấu hình lệch, manifest không hợp lệ, hoặc lỗi Docker/Kafka/timeout. Lỗi tham số dòng lệnh do `argparse` trả exit `2`.
+- Khi chưa có topic, `--check` báo `MISSING` và exit `1` là bình thường; lệnh này không tạo topic.
+
+Hành vi an toàn khi chạy lại:
+
+- Toàn bộ manifest được kiểm tra trước khi gọi Docker; từ chối tên trùng, trường JSON trùng và giá trị cấu hình có khoảng trắng ở đầu/cuối.
+- Kiểm tra tất cả topic đã tồn tại trước khi tạo bất kỳ topic còn thiếu nào. Nếu có cấu hình lệch, in `DRIFT` với giá trị mong muốn/thực tế và dừng, không tạo hoặc sửa topic.
+- So sánh partitions, số replica từng partition và các khóa `config` được khai báo trong manifest. Dùng `kafka-configs.sh --describe --all` để đọc giá trị hiệu lực, kể cả giá trị kế thừa từ broker; không chỉ kiểm tra override trên topic.
+- Nếu replica đang được thêm/bớt trong một reassignment, báo lỗi để chạy lại sau khi thao tác đó hoàn tất, tránh coi trạng thái chuyển tiếp là đã khớp.
+- Chỉ tạo topic còn thiếu bằng `--if-not-exists`, rồi đọc lại để xác minh. Nếu một tiến trình khác vừa tạo topic cùng tên nhưng khác cấu hình, script vẫn báo lệch thay vì mặc định coi là thành công.
+- Không tự alter partitions/replication/config, không xóa hoặc tạo lại topic, không tác động topic ngoài manifest và không đọc credentials từ `.env`.
+
+Script là bootstrap/validator, không phải công cụ tự áp dụng mọi thay đổi cấu hình. Nếu cần đổi một topic đang có, phải review và thực hiện thay đổi có chủ đích, rồi chạy `--check` lại. Việc tạo nhiều topic không phải transaction: nếu Kafka lỗi giữa chừng, topic đã tạo vẫn được giữ nguyên và có thể chạy lại script sau khi xử lý lỗi. Script cũng không thay thế kiểm tra leader/ISR, dữ liệu CDC hoặc consumer lag.
+
+Manifest mặc định được tìm theo vị trí file script, không phụ thuộc thư mục đang đứng. Có thể chọn manifest khác hoặc dùng broker khác để chạy Kafka CLI:
+
+```powershell
+.\venv\Scripts\python.exe -B .\kafka\setup_topics.py --check --manifest .\kafka\topics.json --container kafka-2
+```
+
+`localhost:9092` ở đây là listener bên trong container được chọn, không phải listener trên Windows host. Cấu hình và parser CLI đã được kiểm tra với image Kafka `4.3.0` đang pin; khi nâng Kafka cần chạy lại test và smoke test CLI.
+
+Chạy unit test, không cần Docker/Kafka:
+
+```powershell
+.\venv\Scripts\python.exe -B -m unittest discover -s kafka -p test_setup_topics.py -v
+```
+
+**Kết quả kiểm thử ngày 2026-11-08: đạt.**
+
+- `--check` trước khi tạo báo đủ năm topic còn thiếu và không tạo topic.
+- Lệnh setup tạo và xác minh đủ năm topic; chạy lại có `0 creation request(s)`; `--check` sau đó đạt.
+- Manifest thử nghiệm đặt sai retention của `orders` đồng thời khai báo một topic còn thiếu: script exit `1` trước khi tạo topic còn thiếu, không thay đổi retention thực tế. Manifest thử nghiệm được đặt ngoài repo và đã dọn sau kiểm thử.
+- Kiểm tra trực tiếp xác nhận mỗi topic có ba partition, RF=3, đúng cấu hình và mỗi partition có đủ ba replica trong ISR.
+- Chạy bản script cuối từ thư mục khác và qua `kafka-2` vẫn tìm đúng manifest mặc định, kiểm tra thành công mà không tạo topic.
+
+Bước tiếp theo là chuẩn bị dữ liệu nguồn để kiểm thử snapshot và đăng ký PostgreSQL connector qua HAProxy với `topic.prefix=ecommerce`. Các topic vừa tạo chưa chứng minh CDC hoặc task failover.
 
 ## Mốc M3 — MinIO và Iceberg Catalog
 

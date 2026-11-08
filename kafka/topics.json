@@ -1,0 +1,52 @@
+[
+  {
+    "name": "ecommerce.public.customers",
+    "partitions": 3,
+    "replication_factor": 3,
+    "config": {
+      "min.insync.replicas": "2",
+      "retention.ms": "604800000",
+      "cleanup.policy": "delete"
+    }
+  },
+  {
+    "name": "ecommerce.public.products",
+    "partitions": 3,
+    "replication_factor": 3,
+    "config": {
+      "min.insync.replicas": "2",
+      "retention.ms": "604800000",
+      "cleanup.policy": "delete"
+    }
+  },
+  {
+    "name": "ecommerce.public.orders",
+    "partitions": 3,
+    "replication_factor": 3,
+    "config": {
+      "min.insync.replicas": "2",
+      "retention.ms": "604800000",
+      "cleanup.policy": "delete"
+    }
+  },
+  {
+    "name": "ecommerce.public.order_items",
+    "partitions": 3,
+    "replication_factor": 3,
+    "config": {
+      "min.insync.replicas": "2",
+      "retention.ms": "604800000",
+      "cleanup.policy": "delete"
+    }
+  },
+  {
+    "name": "ecommerce.dlq",
+    "partitions": 3,
+    "replication_factor": 3,
+    "config": {
+      "min.insync.replicas": "2",
+      "retention.ms": "604800000",
+      "cleanup.policy": "delete"
+    }
+  }
+]
