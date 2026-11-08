@@ -124,6 +124,43 @@ services:
       <<: *connect-environment
       CONNECT_REST_ADVERTISED_HOST_NAME: connect-2
 
+  connect-lb:
+    image: haproxy:3.4.4-alpine3.24
+    hostname: connect-lb
+    container_name: connect-lb
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      connect-1:
+        condition: service_healthy
+      connect-2:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8083:8083"
+    volumes:
+      - type: bind
+        source: ./haproxy/haproxy.cfg
+        target: /usr/local/etc/haproxy/haproxy.cfg
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - -T
+        - "5"
+        - http://127.0.0.1:8083/
+      interval: 10s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - platform
+
 networks:
   platform:
     name: common-network

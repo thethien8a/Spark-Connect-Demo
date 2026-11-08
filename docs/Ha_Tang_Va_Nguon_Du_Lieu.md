@@ -205,7 +205,65 @@ docker exec kafka-1 /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:
 - Log xác nhận hai worker tham gia cùng Connect group, có assignment thành công và ổn định sau rebalance.
 - Ba internal topic `spark-connect-lab-connect-configs`, `spark-connect-lab-connect-offsets`, `spark-connect-lab-connect-status` có replication factor `3` và `cleanup.policy=compact`; số partition lần lượt là `1`, `25`, `5`.
 
-Nếu chưa đăng ký connector, `GET /connectors` trả `[]` là bình thường. Worker healthy và plugin được nhận diện chưa chứng minh CDC hoặc task failover; các kiểm thử đó thực hiện sau khi dựng HAProxy và đăng ký PostgreSQL connector.
+Nếu chưa đăng ký connector, `GET /connectors` trả `[]` là bình thường. Worker healthy và plugin được nhận diện chưa chứng minh CDC hoặc task failover; các kiểm thử đó thực hiện sau khi đăng ký PostgreSQL connector.
+
+### Chạy HAProxy cho Connect REST API
+
+Service `connect-lb` trong `kafka/compose.yaml` dùng image `haproxy:3.4.4-alpine3.24` và mount read-only file `kafka/haproxy/haproxy.cfg`. Không cần build lại Kafka Connect image khi thay đổi cấu hình proxy.
+
+HAProxy chia request bằng round-robin, kiểm tra `GET /` trên từng worker mỗi `2s` và chỉ nhận HTTP `200`. Worker bị loại sau ba lần kiểm tra lỗi liên tiếp và được nhận lại sau hai lần thành công. Docker DNS resolver cập nhật địa chỉ backend khi container worker được tạo lại.
+
+Chỉ proxy publish REST port tại `127.0.0.1:8083`; hai worker vẫn chỉ mở `8083` trong Docker network. Endpoint không có authentication nên không publish ra LAN. Health check của `connect-lb` gọi qua proxy và chỉ đạt khi có ít nhất một worker phục vụ được request.
+
+Kiểm tra cấu hình và khởi động từ thư mục gốc project:
+
+```powershell
+docker compose --env-file .env -f compose.yaml config --quiet
+docker compose --env-file .env -f compose.yaml run --rm --no-deps connect-lb haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+docker compose --env-file .env -f compose.yaml up -d --wait --wait-timeout 240 connect-lb
+```
+
+Lệnh `up` chờ cả hai worker healthy khi khởi động ban đầu và khởi động Kafka dependency nếu cần; không khởi động Spark hoặc PostgreSQL. Khi đã chạy, HAProxy tiếp tục phục vụ qua worker còn lại nếu một worker dừng.
+
+Client quản trị connector dùng một endpoint duy nhất:
+
+```powershell
+Invoke-RestMethod http://localhost:8083/
+Invoke-RestMethod http://localhost:8083/connector-plugins
+Invoke-RestMethod http://localhost:8083/connectors
+docker compose --env-file .env -f compose.yaml logs --tail 40 connect-lb
+```
+
+HTTP access log ghi rõ backend `connect_workers/connect-1` hoặc `connect_workers/connect-2` để xác nhận routing, không cần thêm header riêng vào Connect REST response. Sau khi sửa `haproxy.cfg`, chạy lại bước kiểm tra cấu hình rồi `docker compose --env-file .env -f compose.yaml restart connect-lb` để nạp cấu hình mới.
+
+Kiểm thử dừng từng worker sẽ gây Connect rebalance; chỉ chạy khi chấp nhận tác động này. Ví dụ kiểm tra REST failover, có `finally` để khởi động lại worker nếu request lỗi:
+
+```powershell
+foreach ($worker in "connect-1", "connect-2") {
+    try {
+        docker compose --env-file .env -f compose.yaml stop $worker
+        Start-Sleep -Seconds 8
+        1..6 | ForEach-Object {
+            $response = Invoke-WebRequest -UseBasicParsing -TimeoutSec 10 -Uri "http://localhost:8083/?probe=${worker}-down-$_"
+            if ($response.StatusCode -ne 200) { throw "Connect REST request failed" }
+            $response.StatusCode
+        }
+    } finally {
+        docker compose --env-file .env -f compose.yaml up -d --no-deps --wait --wait-timeout 60 $worker
+    }
+}
+docker compose --env-file .env -f compose.yaml logs --tail 50 connect-lb
+```
+
+**Kết quả kiểm thử HAProxy ngày 2026-11-08: đạt.**
+
+- `GET /`, `/connector-plugins` và `/connectors` qua endpoint chung thành công; plugin Debezium PostgreSQL là `3.6.1.Final`.
+- Access log xác nhận request được phục vụ bởi cả hai worker khi chúng healthy.
+- Khi dừng `connect-1`, cả sáu request thử nghiệm trả HTTP `200` qua `connect-2`; khi dừng `connect-2`, kết quả tương tự qua `connect-1`.
+- Khi cả hai worker dừng và bị loại khỏi backend, endpoint trả HTTP `503`.
+- Sau khi khởi động lại, hai worker và HAProxy đều healthy, request lại được chia tới cả hai; port của worker không publish ra host.
+
+Các bài kiểm thử này dùng connector registry rỗng, không chứng minh CDC hoặc connector task failover. Bước tiếp theo là chuẩn bị topic CDC và đăng ký PostgreSQL connector cho bốn bảng; seed/generator vẫn là script riêng, không tự chạy trong Compose.
 
 ## Mốc M3 — MinIO và Iceberg Catalog
 
