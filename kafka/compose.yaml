@@ -161,6 +161,54 @@ services:
     networks:
       - platform
 
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:v1.5.0@sha256:7cda86a33344160309fdb65146332e4da65db81a945614f2fe32e210803f6fd1
+    hostname: kafka-ui
+    container_name: kafka-ui
+    restart: unless-stopped
+    stop_grace_period: 30s
+    mem_limit: 1g
+    depends_on:
+      kafka-1:
+        condition: service_healthy
+      kafka-2:
+        condition: service_healthy
+      kafka-3:
+        condition: service_healthy
+      connect-lb:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${KAFKA_UI_HOST_PORT:-8084}:8080"
+    environment:
+      JAVA_OPTS: -Xms128m -Xmx512m
+      AUTH_TYPE: DISABLED
+      DYNAMIC_CONFIG_ENABLED: "false"
+      MCP_ENABLED: "false"
+      KAFKA_CLUSTERS_0_NAME: spark-connect-lab
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      KAFKA_CLUSTERS_0_READONLY: "true"
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: debezium
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://connect-lb:8083
+      LOGGING_LEVEL_IO_KAFBAT_UI: INFO
+      HTTP_ERROR_EXCLUDESTACKTRACES: "true"
+      TZ: UTC
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - -T
+        - "5"
+        - http://127.0.0.1:8080/actuator/health
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+    networks:
+      - platform
+
 networks:
   platform:
     name: common-network

@@ -332,6 +332,69 @@ Chạy unit test, không cần Docker/Kafka:
 
 Bước tiếp theo là chuẩn bị dữ liệu nguồn để kiểm thử snapshot và đăng ký PostgreSQL connector qua HAProxy với `topic.prefix=ecommerce`. Các topic vừa tạo chưa chứng minh CDC hoặc task failover.
 
+### Kafka web UI chỉ đọc
+
+Service `kafka-ui` trong `kafka/compose.yaml` dùng Kafbat UI `v1.5.0`, pin cả version và image digest. Đây là giao diện vận hành Kafka, không phải dashboard nghiệp vụ. UI không thay thế `kafka/topics.json` và `kafka/setup_topics.py` làm nguồn cấu hình topic được quản lý trong Git.
+
+- Endpoint mặc định: `http://localhost:8084`, chỉ publish trên `127.0.0.1`; không trùng Spark Master UI tại host port `8080` hoặc Connect REST tại `8083`.
+- Đổi host port bằng `KAFKA_UI_HOST_PORT` trong `.env`; `.env.example` khai báo `8084`. Nếu biến chưa có trong `.env`, Compose vẫn dùng mặc định `8084`.
+- Cluster hiển thị là `spark-connect-lab`, kết nối trực tiếp tới `kafka-1:9092,kafka-2:9092,kafka-3:9092` qua network `platform`.
+- Mục Kafka Connect hiển thị instance `debezium`, đọc trạng thái qua `http://connect-lb:8083`, không gọi trực tiếp hai worker và không dùng `localhost` của Windows từ container.
+- Chạy bằng user `kafkaui` trong image; JVM heap `128-512 MB`, container memory limit `1 GiB`. UI không mount volume Kafka, Docker socket hoặc credentials từ `.env`.
+
+Các bảo vệ được khai báo rõ trong Compose:
+
+- `KAFKA_CLUSTERS_0_READONLY=true`: backend từ chối thao tác thay đổi topic, message, consumer group và connector; không chỉ ẩn nút trên frontend.
+- `DYNAMIC_CONFIG_ENABLED=false`: không cho đổi cấu hình cluster hoặc bỏ chế độ chỉ đọc bằng giao diện/API cấu hình động.
+- `MCP_ENABLED=false`: không bật MCP server của Kafbat UI, tránh có thêm đường thực thi ngoài REST API của cluster.
+- `HTTP_ERROR_EXCLUDESTACKTRACES=true`: response lỗi không trả đầy đủ stack trace.
+- `AUTH_TYPE=DISABLED`: không có màn hình đăng nhập. Chỉ dùng trong local/lab; tiến trình trên host hoặc container trong shared network vẫn có thể truy cập UI và đọc dữ liệu.
+
+Chế độ chỉ đọc của ứng dụng không phải Kafka ACL và không bảo vệ các kết nối trực tiếp tới broker hoặc Connect REST. Không đổi binding sang LAN/public nếu chưa thiết kế authentication, authorization và TLS phù hợp.
+
+Từ thư mục gốc, kiểm tra cấu hình rồi khởi động UI:
+
+```powershell
+docker compose --env-file .env -f compose.yaml config --quiet
+docker compose --env-file .env -f compose.yaml up -d --wait --wait-timeout 180 kafka-ui
+```
+
+Lệnh `up` bình thường chờ ba broker và `connect-lb` healthy trong lần khởi động ban đầu. Nếu một dependency đang lỗi, lệnh này có thể chưa khởi động UI dù broker khác vẫn truy cập được. Khi dependency đã được vận hành riêng và cần khởi động/recreate chỉ UI, dùng `up -d --no-deps --wait --wait-timeout 180 kafka-ui`. Docker không tự dừng UI chỉ vì dependency chuyển unhealthy sau khi UI đã chạy.
+
+Health check dùng BusyBox `wget` có sẵn trong image để gọi `http://127.0.0.1:8080/actuator/health`. Đây là health của ứng dụng UI; cần kiểm tra thêm cluster `ONLINE` trong giao diện hoặc API, không coi UI healthy là đã chứng minh CDC hoạt động.
+
+Kiểm tra từ PowerShell, với host port mặc định:
+
+```powershell
+Invoke-RestMethod http://localhost:8084/actuator/health
+Invoke-RestMethod http://localhost:8084/api/clusters
+Invoke-RestMethod http://localhost:8084/api/clusters/spark-connect-lab/brokers
+Invoke-RestMethod http://localhost:8084/api/clusters/spark-connect-lab/connects
+docker compose --env-file .env -f compose.yaml logs --tail 50 kafka-ui
+.\venv\Scripts\python.exe -B .\kafka\setup_topics.py --check
+```
+
+Sau khi mở UI, chọn cluster `spark-connect-lab`:
+
+1. **Brokers**: xem ba node, leader và replica/ISR.
+2. **Topics**: tìm `ecommerce.` để xem bốn topic CDC và DLQ, partitions và cấu hình; mở topic để xem message.
+3. **Consumer Groups**: xem group, trạng thái và lag khi có consumer phù hợp.
+4. **Kafka Connect**: xem instance `debezium`, plugin và trạng thái connector khi đã đăng ký.
+
+Bước bổ sung UI này chưa chạy seed/generator hoặc đăng ký connector CDC, nên danh sách connector/consumer group và message nghiệp vụ có thể rỗng khi chưa có luồng dữ liệu. Chưa cấu hình JMX/Prometheus cho UI; các biểu đồ throughput và Kafka version trong UI có thể trống/`Unknown`, dù metadata broker/topic vẫn đọc được. Không thay cấu hình broker hoặc dựng metrics stack trong bước bổ sung UI này.
+
+**Kết quả kiểm thử ngày 2026-11-08: đạt ở mức HTTP/API.**
+
+- Frontend HTML cùng bundle JavaScript/CSS trả HTTP `200`; actuator trả `UP`, cluster trả `ONLINE`, `readOnly=true` và đủ ba broker.
+- Cả năm topic nghiệp vụ có ba partition, RF=3, chín replica in-sync trên mỗi topic và không có partition under-replicated. Đọc message qua API SSE thành công.
+- Đọc consumer group, Connect instance qua HAProxy và plugin Debezium PostgreSQL thành công; chưa có connector đăng ký.
+- Mười yêu cầu ghi thử nghiệm thuộc topic/message/group/Connect đều bị backend từ chối với HTTP `405`, mã lỗi `4003`, thông báo `This cluster is in read-only mode.`. Tên topic/group/connector dùng để thử xóa hoặc thay đổi là tên thử nghiệm không tồn tại; không xóa hay sửa tài nguyên thật.
+- Đổi dynamic config bị từ chối với HTTP `400`, mã `4002`; MCP routes không hoạt động; stack trace đã được che.
+- Danh sách topic và connector không thay đổi sau thử nghiệm; `setup_topics.py --check` và 20 unit test quản lý topic vẫn đạt.
+- Chưa xác nhận tương tác/render trên Chrome hoặc layout desktop/mobile: kiểm tra tự động lần này chỉ xác minh HTTP/API và tải bundle frontend.
+
+Tham khảo: [Kafbat UI v1.5.0](https://github.com/kafbat/kafka-ui/releases/tag/v1.5.0), [read-only filter đúng version](https://github.com/kafbat/kafka-ui/blob/v1.5.0/api/src/main/java/io/kafbat/ui/config/ReadOnlyModeFilter.java).
+
 ## Mốc M3 — MinIO và Iceberg Catalog
 
 1. Dựng MinIO và init bucket `iceberg-data` idempotent.
@@ -351,6 +414,7 @@ Stack development mục tiêu:
 source-postgres
 kafka + kafka-connect/debezium
 haproxy cho kafka-connect REST API
+kafka-ui (Kafbat, local read-only)
 catalog-postgres
 minio
 spark-master + spark-worker
